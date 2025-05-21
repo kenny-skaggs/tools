@@ -3,65 +3,40 @@ from difflib import SequenceMatcher
 from functools import partial
 from enum import auto, Enum
 import html
-from random import choice
 import sys
 
 import PyQt6.QtCore as qtc
 import PyQt6.QtGui as qtg
 import PyQt6.QtWidgets as qt
 
+from data import ResponseInfo, ResponseCategory, Serialization
+from networking import Requestor
+import ui
+from value_generation import FileLoader, TokenRange
+
 import time
 
 
-
-class ResponseWrapper:
-    def __init__(self, status, content, value):
-        self._status = status
-        self._content = content
-        self.value = str(value)
-
-    def get_content(self):
-        return self._content
-
-    def get_status_code(self):
-        return self._status
-
-
-def gen_response(value):
-    status = choice([200, 404, 301])
-    content = choice([
-        """
-            first line
-            <b>test 8</b>
-            foo
-            bar
-            bqwerz
-        """,
-        """
-            first line
-            <b>test</b>
-        foo
-            bar test
-            baoeuz
-        """
-    ])
-    return ResponseWrapper(status, content, value)
+THREAD_COUNT = 8
+DEFAULT_URL = 'https://0abe00d90311872d82e4e2fa00ec0049.web-security-academy.net/login'
+FUZZ_FILE_PATH = 'bob.txt'
 
 
 class WorkerSignals(qtc.QObject):
-    result = qtc.pyqtSignal(ResponseWrapper)
+    result = qtc.pyqtSignal(ResponseInfo)
 
 
 class RequestWorker(qtc.QRunnable):
-    def __init__(self, value):
+    def __init__(self, value_set, requestor: Requestor):
         super().__init__()
-        self._value = value
+        self._value_set = value_set
         self.signals = WorkerSignals()
+        self._requestor = requestor
 
     @qtc.pyqtSlot()
     def run(self):
-        time.sleep(1)
-        result = gen_response(self._value)
+        time.sleep(0.2)
+        result = self._requestor.make_request(self._value_set)
         self.signals.result.emit(result)
 
 
@@ -75,7 +50,7 @@ class ChangeIndicator:
     def __init__(self, change_value, start, end):
         match change_value:
             case 'replace':
-                self.color = 'yellow'
+                self.color = '#505000'
             case 'delete':
                 self.color = 'red'
             case 'insert':
@@ -92,74 +67,6 @@ class ChangeIndicator:
         return self.__str__()
 
 
-class ResponseCategory(qtc.QObject):
-    did_update = qtc.pyqtSignal()
-
-    def __init__(self, response: ResponseWrapper):
-        super().__init__()
-        self.status_code = response.get_status_code()
-        self.content = response.get_content()
-        self.values = []
-
-    def setDisplay(self, display):
-        self._display = display
-        self._display.setText(str(self))
-
-    def add_value(self, value):
-        self.values.append(value)
-        self._display.setText(str(self))
-        self.did_update.emit()
-
-    def get_count(self):
-        return len(self.values)
-
-    def __str__(self):
-        return f"{self.status_code}\t\tcount: {self.get_count()}\t\tsize: {len(self.content)}"
-
-    def __eq__(self, other):
-        return self.status_code == other.status_code and self.content == other.content
-
-    def get_map_key(self):
-        return hash(str(self.status_code) + self.content)
-
-
-class ResponseCategoryDisplay(qt.QWidget):
-    view_details = qtc.pyqtSignal()
-    did_select = qtc.pyqtSignal(bool)
-
-    def __init__(self, status_code):
-        super().__init__()
-        self.status_code = status_code
-
-        layout = qt.QHBoxLayout()
-        self.setLayout(layout)
-
-        self.check_box = qt.QCheckBox()
-        self.check_box.stateChanged.connect(self._on_select_changed)
-        layout.addWidget(self.check_box, stretch=1)
-        self._text_label = qt.QLabel()
-        layout.addWidget(self._text_label, stretch=2)
-
-        detail_button = qt.QPushButton("View")
-        detail_button.clicked.connect(self._on_details_clicked)
-        layout.addWidget(detail_button, stretch=1)
-
-    def setText(self, text):
-        self._text_label.setText(text)
-
-    def _on_details_clicked(self):
-        self.view_details.emit()
-
-    def clear_selection(self):
-        self.check_box.setChecked(False)
-
-    def set_selected(self):
-        self.check_box.setChecked(True)
-
-    def _on_select_changed(self):
-        self.did_select.emit(self.check_box.isChecked())
-
-
 
 class ComparisonDetailWidget(qt.QWidget):
     def __init__(self, category, content, change_list):
@@ -173,9 +80,10 @@ class ComparisonDetailWidget(qt.QWidget):
         layout.addWidget(self.status_display)
 
         markup = self._apply_changes(content, change_list)
-        markup = markup.replace('\n', '<br>')
-        self.content_display = qt.QLabel(markup)
-        self.content_display.setTextFormat(qtc.Qt.TextFormat.RichText)
+
+        self.content_display = ui.HtmlView()
+        self.content_display.setRichTextFormat()
+        self.content_display.setText(markup)
         layout.addWidget(self.content_display)
 
     def _apply_changes(self, text, change_list):
@@ -191,6 +99,9 @@ class ComparisonDetailWidget(qt.QWidget):
             offset += len(span_end)
 
         return text
+
+    def get_scroll_bars(self):
+        return self.content_display.verticalScrollBar(), self.content_display.horizontalScrollBar()
 
 
 class ComparisonWindow(qt.QMainWindow):
@@ -220,8 +131,15 @@ class ComparisonWindow(qt.QMainWindow):
 
         layout = qt.QHBoxLayout()
 
-        layout.addWidget(ComparisonDetailWidget(one, one_content, first_changes))
-        layout.addWidget(ComparisonDetailWidget(two, two_content, second_changes))
+        one_window = ComparisonDetailWidget(one, one_content, first_changes)
+        two_window = ComparisonDetailWidget(two, two_content, second_changes)
+        layout.addWidget(one_window)
+        layout.addWidget(two_window)
+
+        v1_scroll, h1_scroll = one_window.get_scroll_bars()
+        v2_scroll, h2_scroll = two_window.get_scroll_bars()
+        v1_scroll.valueChanged.connect(v2_scroll.setValue)
+        h1_scroll.valueChanged.connect(h2_scroll.setValue)
 
         container = qt.QWidget()
         container.setLayout(layout)
@@ -250,13 +168,12 @@ class DetailsWindow(qt.QMainWindow):
         response_layout.addWidget(self.count_display)
         self.status_display = qt.QLabel()
         response_layout.addWidget(self.status_display)
-        self.content_display = qt.QLabel()
+        
+        self.content_display = ui.HtmlView()  # todo: not display all content for some reason
         response_layout.addWidget(self.content_display)
 
-        self.value_layout = qt.QVBoxLayout()
-        self.value_layout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
+        self.value_layout = ui.FuzzValueListWidget()
         main_layout.addLayout(self.value_layout, stretch=1)
-        self.value_widgets = []
 
         container = qt.QWidget()
         container.setLayout(main_layout)
@@ -278,16 +195,11 @@ class DetailsWindow(qt.QMainWindow):
     def _on_category_update(self):
         self.count_display.setText(f'Count: {self._category.get_count()}')
         self.status_display.setText(f'Status Code: {self._category.status_code}')
-        self.content_display.setText(self._category.content)
+        
+        new_content = html.escape(self._category.content)
+        self.content_display.setText(new_content)
 
-        for w in self.value_widgets:
-            self.value_layout.removeWidget(w)
-        self.value_widgets = []
-
-        for value in sorted(self._category.values):
-            w = qt.QLabel(value)
-            self.value_layout.addWidget(w)
-            self.value_widgets.append(w)
+        self.value_layout.display_values(self._category.values)
 
     def closeEvent(self, _):
         self.did_close.emit()
@@ -298,9 +210,11 @@ class MainWindow(qt.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Orthrus")
+        self.setWindowTitle("Beholder")
 
         main_layout = qt.QVBoxLayout()
+
+        self._add_scan_controls(main_layout)
 
         status_layout = qt.QHBoxLayout()
         main_layout.addLayout(status_layout)
@@ -331,17 +245,55 @@ class MainWindow(qt.QMainWindow):
         self.detail_window = None
 
         self.selected_categories = []
+        self.raw_results = []
 
-        self.count = 0
+        self._setup_menu()
+
+        self._total_values = 0
+
+    def _setup_menu(self):
+        save_action = qtg.QAction('Save Results', self)
+        save_action.triggered.connect(self._on_menu_save_selected)
+        strainer_action = qtg.QAction('Strainers...', self)
+        strainer_action.triggered.connect(self._on_menu_strainer_selected)
+
+        menu = self.menuBar()
+        file_menu = menu.addMenu('File')
+        file_menu.addAction(save_action)
+        file_menu.addAction(strainer_action)
+
+    def _add_scan_controls(self, layout):
+        control_layout = qt.QHBoxLayout()
+        layout.addLayout(control_layout)
+
+        self.url_input = qt.QLineEdit(DEFAULT_URL)
+        control_layout.addWidget(self.url_input)
+
+        start_button = qt.QPushButton('Start Scan')
+        start_button.clicked.connect(self._begin_scanning)
+        control_layout.addWidget(start_button)
+
+    def _begin_scanning(self):
+        requestor = Requestor(self.url_input.text())
+
         self.threadpool = qtc.QThreadPool()
-        self.threadpool.setMaxThreadCount(4)
-        for i in range(200):
-            worker = RequestWorker(i)
-            worker.signals.result.connect(self._on_request_complete)
+        self.threadpool.setMaxThreadCount(THREAD_COUNT)
+
+        test_file = FUZZ_FILE_PATH
+        # loader = FileLoader(test_file)
+        loader = TokenRange()
+        for val_set in loader.get_value_sets():
+            self._total_values += 1
+            worker = RequestWorker(val_set, requestor)
+            worker.signals.result.connect(self._process_response)
             self.threadpool.start(worker)
 
-    def _on_request_complete(self, response):
-        self.count += 1
+    def load_results(self, response_list):
+        for response in response_list:
+            self._process_response(response)
+
+    def _process_response(self, response):
+        self.raw_results.append(response)
 
         category = ResponseCategory(response)
         map_key = category.get_map_key()
@@ -349,7 +301,7 @@ class MainWindow(qt.QMainWindow):
         if map_key in self.category_display_map:
             self.category_display_map[map_key].add_value(response.value)
         else:
-            button = ResponseCategoryDisplay(category.status_code)
+            button = ui.ResponseCategoryDisplay(category.status_code)
 
             self.status_widget_map[category.status_code].append(button)
             self.response_list_layout.addWidget(button)
@@ -362,7 +314,7 @@ class MainWindow(qt.QMainWindow):
 
             self.category_display_map[map_key] = category
 
-        self._update_progress_label(self.count, response.value)
+        self._update_progress_label(response.value)
 
     def _button_clicked(self, category):
         if not self.detail_window:
@@ -409,13 +361,57 @@ class MainWindow(qt.QMainWindow):
 
         self.compare_button.setDisabled(len(self.selected_categories) != 2)
 
-    def _update_progress_label(self, num_complete, latest_value):
-        self.progress_label.setText(f'{str(num_complete).rjust(10)} completed requests\t\trecent value: {latest_value}')
+    def _update_progress_label(self, latest_value):
+        if self._total_values == 0:
+            return
+        
+        complete_count = len(self.raw_results)
+        percent_complete = round(complete_count / self._total_values * 100, 1)
+        self.progress_label.setText(
+            f'{complete_count} '
+            f'completed requests ({percent_complete}%)'
+            f'\t\trecent value: {latest_value}'
+        )
+
+    def _on_menu_save_selected(self):
+        self._file_dialog = qt.QFileDialog()
+        self._file_dialog.setAcceptMode(qt.QFileDialog.AcceptMode.AcceptSave)
+        filters = ["Beholder Collections (*.bhldr)"]
+        self._file_dialog.setNameFilters(filters)
+        self._file_dialog.setDefaultSuffix('bhldr')
+        self._file_dialog.fileSelected.connect(self._on_save_results)
+        self._file_dialog.show()
+
+    def _on_menu_strainer_selected(self):
+        self._strainer_dialog = ui.StrainerManagement(['one', 'two', 'three'])
+        self._strainer_dialog.show()
+
+    def _on_save_results(self, file_path):
+        Serialization.save_to_file(self.raw_results, file_path)
+
+
+class MainControllor(qtc.QObject):
+    def __init__(self):
+        super().__init__()
+        self._scan_window = None
+
+        self._initial_window = ui.InitialWindow()
+        self._initial_window.new_selected.connect(self.open_scan_window)
+        self._initial_window.load_selected.connect(self.load_file)
+        self._initial_window.show()
+
+    def open_scan_window(self):
+        self._initial_window.close()
+
+        self._scan_window = MainWindow()
+        self._scan_window.show()
+
+    def load_file(self, file_path):
+        response_list = Serialization.load_from_file(file_path)
+        self.open_scan_window()
+        self._scan_window.load_results(response_list)
 
 
 app = qt.QApplication(sys.argv)
-
-window = MainWindow()
-window.show()
-
+controller = MainControllor()
 app.exec()

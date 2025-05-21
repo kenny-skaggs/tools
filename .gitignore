@@ -1,0 +1,5 @@
+
+*/__pycache__/
+
+beholder/*.bhldr
+beholder/*.txt
