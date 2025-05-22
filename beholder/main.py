@@ -12,13 +12,13 @@ import PyQt6.QtWidgets as qt
 from data import ResponseInfo, ResponseCategory, Serialization
 from networking import Requestor
 import ui
-from value_generation import FileLoader, TokenRange
+from request_generation import WordlistLoader
 
 import time
 
 
 THREAD_COUNT = 8
-DEFAULT_URL = 'https://0abe00d90311872d82e4e2fa00ec0049.web-security-academy.net/login'
+DEFAULT_URL = 'https://0aca00f404728f168273c12600d400be.web-security-academy.net/login'
 FUZZ_FILE_PATH = 'bob.txt'
 
 
@@ -27,16 +27,16 @@ class WorkerSignals(qtc.QObject):
 
 
 class RequestWorker(qtc.QRunnable):
-    def __init__(self, value_set, requestor: Requestor):
+    def __init__(self, request, requestor: Requestor):
         super().__init__()
-        self._value_set = value_set
+        self._request = request
         self.signals = WorkerSignals()
         self._requestor = requestor
 
     @qtc.pyqtSlot()
     def run(self):
         time.sleep(0.2)
-        result = self._requestor.make_request(self._value_set)
+        result = self._requestor.make_request(self._request)
         self.signals.result.emit(result)
 
 
@@ -280,11 +280,10 @@ class MainWindow(qt.QMainWindow):
         self.threadpool.setMaxThreadCount(THREAD_COUNT)
 
         test_file = FUZZ_FILE_PATH
-        # loader = FileLoader(test_file)
-        loader = TokenRange()
-        for val_set in loader.get_value_sets():
+        generator = WordlistLoader(url=DEFAULT_URL, filepath=FUZZ_FILE_PATH)
+        for request in generator.get_requests():
             self._total_values += 1
-            worker = RequestWorker(val_set, requestor)
+            worker = RequestWorker(request, requestor)
             worker.signals.result.connect(self._process_response)
             self.threadpool.start(worker)
 

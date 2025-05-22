@@ -6,10 +6,11 @@ import PyQt6.QtCore as qtc
 
 
 class RequestFields:
-    def __init__(self, url):
+    def __init__(self, url, value_set):
         self.url = url
         self.headers = {}
         self.data = ""
+        self.value_set = value_set
 
 
 @dataclass()
