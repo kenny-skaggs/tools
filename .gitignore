@@ -3,3 +3,5 @@
 
 beholder/*.bhldr
 beholder/*.txt
+
+beholder/.beholder_config

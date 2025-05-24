@@ -11,15 +11,14 @@ import PyQt6.QtWidgets as qt
 
 from data import ResponseInfo, ResponseCategory, Serialization
 from networking import Requestor
+from project import Config
 import ui
-from request_generation import WordlistLoader
+from request_generation import WordlistLoader, Ranger, BruteMfa
 
 import time
 
 
 THREAD_COUNT = 8
-DEFAULT_URL = 'https://0aca00f404728f168273c12600d400be.web-security-academy.net/login'
-FUZZ_FILE_PATH = 'bob.txt'
 
 
 class WorkerSignals(qtc.QObject):
@@ -35,7 +34,7 @@ class RequestWorker(qtc.QRunnable):
 
     @qtc.pyqtSlot()
     def run(self):
-        time.sleep(0.2)
+        time.sleep(0.1)
         result = self._requestor.make_request(self._request)
         self.signals.result.emit(result)
 
@@ -205,16 +204,13 @@ class DetailsWindow(qt.QMainWindow):
         self.did_close.emit()
 
 
-
 class MainWindow(qt.QMainWindow):
-    def __init__(self):
+    def __init__(self, scan_url, wordlist_path):
         super().__init__()
 
         self.setWindowTitle("Beholder")
 
         main_layout = qt.QVBoxLayout()
-
-        self._add_scan_controls(main_layout)
 
         status_layout = qt.QHBoxLayout()
         main_layout.addLayout(status_layout)
@@ -250,6 +246,13 @@ class MainWindow(qt.QMainWindow):
         self._setup_menu()
 
         self._total_values = 0
+        self._scan_url = scan_url
+        self._wordlist_path = wordlist_path
+
+    def show(self):
+        super().show()
+        print('got url', self._scan_url)
+        print('got file', self._wordlist_path)
 
     def _setup_menu(self):
         save_action = qtg.QAction('Save Results', self)
@@ -262,25 +265,15 @@ class MainWindow(qt.QMainWindow):
         file_menu.addAction(save_action)
         file_menu.addAction(strainer_action)
 
-    def _add_scan_controls(self, layout):
-        control_layout = qt.QHBoxLayout()
-        layout.addLayout(control_layout)
-
-        self.url_input = qt.QLineEdit(DEFAULT_URL)
-        control_layout.addWidget(self.url_input)
-
-        start_button = qt.QPushButton('Start Scan')
-        start_button.clicked.connect(self._begin_scanning)
-        control_layout.addWidget(start_button)
-
     def _begin_scanning(self):
         requestor = Requestor(self.url_input.text())
 
         self.threadpool = qtc.QThreadPool()
         self.threadpool.setMaxThreadCount(THREAD_COUNT)
 
-        test_file = FUZZ_FILE_PATH
-        generator = WordlistLoader(url=DEFAULT_URL, filepath=FUZZ_FILE_PATH)
+        # generator = WordlistLoader(url=self._scan_url, filepath=self._wordlist_path)
+        generator = Ranger(self._scan_url)
+        # generator = BruteMfa(self._scan_url)
         for request in generator.get_requests():
             self._total_values += 1
             worker = RequestWorker(request, requestor)
@@ -402,8 +395,15 @@ class MainControllor(qtc.QObject):
     def open_scan_window(self):
         self._initial_window.close()
 
-        self._scan_window = MainWindow()
+        self._scan_window = ui.ScanConfig()
+        self._scan_window.clicked_start.connect(self.open_results_window)
         self._scan_window.show()
+
+    def open_results_window(self):
+        self._scan_window.close()
+
+        self._results_window = MainWindow(self._scan_window.scan_url, self._scan_window.wordlist_path)
+        self._results_window.show()
 
     def load_file(self, file_path):
         response_list = Serialization.load_from_file(file_path)
@@ -414,3 +414,5 @@ class MainControllor(qtc.QObject):
 app = qt.QApplication(sys.argv)
 controller = MainControllor()
 app.exec()
+
+Config.get_instance().save()

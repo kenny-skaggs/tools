@@ -5,6 +5,7 @@ import PyQt6.QtGui as qtg
 import PyQt6.QtWidgets as qt
 
 from data import ResponseCategory
+from project import Config
 
 
 class InitialWindow(qt.QMainWindow):
@@ -172,6 +173,7 @@ class StrainerEditing(qt.QMainWindow):
         main_layout = qt.QVBoxLayout()
 
         self._text_edit = qt.QPlainTextEdit()
+        self._text_edit.setTabStopDistance(30)
         main_layout.addWidget(self._text_edit, stretch=2)
 
         button_layout = qt.QHBoxLayout()
@@ -188,6 +190,89 @@ class StrainerEditing(qt.QMainWindow):
         self.setCentralWidget(container)
         
     def _on_save(self):
-        new_soup = self._text_edit.toPlainText()
-        print(new_soup)
-        exec(new_soup)
+        new_strainer = self._text_edit.toPlainText()
+
+        scope = {'soup': 5}
+        print('sending ', scope['soup'])
+        exec(new_strainer, globals={}, locals=scope)
+        print('new soup: ', scope['soup'])
+
+
+class ScanConfig(qt.QMainWindow):
+    clicked_start = qtc.pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        config = Config.get_instance()
+
+        self._selected_file = config.selected_wordlist
+
+        main_layout = qt.QVBoxLayout()
+        main_layout.setAlignment(qtc.Qt.AlignmentFlag.AlignTop)
+
+        url_layout = self._build_url_layout(config.scan_url)
+        main_layout.addLayout(url_layout)
+
+        wordlist_layout = self._build_wordlist_layout()
+        main_layout.addLayout(wordlist_layout)
+
+        button_layout = qt.QHBoxLayout()
+        button_layout.setAlignment(qtc.Qt.AlignmentFlag.AlignRight | qtc.Qt.AlignmentFlag.AlignBottom)
+        scan_btn = qt.QPushButton('Start')
+        scan_btn.clicked.connect(self._on_start_clicked)
+        button_layout.addWidget(scan_btn)
+        main_layout.addLayout(button_layout, stretch=1)
+
+        container = qt.QWidget()
+        container.setLayout(main_layout)
+        self.setCentralWidget(container)
+
+        self.setMinimumSize(qtc.QSize(800, 300))
+
+    def _build_url_layout(self, default_url):
+        layout = qt.QHBoxLayout()
+
+        label = qt.QLabel('url:')
+        layout.addWidget(label, stretch=1)
+
+        self._url_input = qt.QLineEdit(default_url)
+        layout.addWidget(self._url_input, stretch=4)
+
+        return layout
+
+    def _build_wordlist_layout(self):
+        layout = qt.QHBoxLayout()
+
+        self._wordlist_label = qt.QLabel(self._selected_file)
+        layout.addWidget(self._wordlist_label, stretch=4)
+
+        btn = qt.QPushButton('Open')
+        btn.clicked.connect(self._select_wordlist_file)
+        layout.addWidget(btn, stretch=1)
+
+        return layout
+    
+    def _select_wordlist_file(self):
+        self._file_dialog = qt.QFileDialog()
+        self._file_dialog.fileSelected.connect(self._use_selected_file)
+        self._file_dialog.setDirectory('/usr/share/wordlists/')
+        self._file_dialog.show()
+
+    def _use_selected_file(self, wordlist_path):
+        self._wordlist_label.setText(wordlist_path)
+        self._selected_file = wordlist_path
+
+    def _on_start_clicked(self):
+        config = Config.get_instance()
+        config.scan_url = self.scan_url
+        config.selected_wordlist = self.wordlist_path
+
+        self.clicked_start.emit()
+
+    @property
+    def scan_url(self):
+        return self._url_input.text()
+    
+    @property
+    def wordlist_path(self):
+        return self._selected_file
